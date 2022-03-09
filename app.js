@@ -1,134 +1,95 @@
-/*
-The Bronze Bonus Bash for Choice Coin 
-Issue: https://github.com/ChoiceCoin/Voting/issues/933
-Run: npm install algo sdk and npm install express
-*/
-const algosdk = require("algosdk"); //imports algosdk
-const express = require('express'); //imports Express
-var app=express();
-
-const http = require('http')
-const server = http.createServer(app);
-const { Server } = require("socket.io");
-const io = new Server(server);
-
-var PORT=process.env.PORT || 8000; //Declares Port
+const algosdk = require('algosdk')
 
 const baseServer = "https://testnet-algorand.api.purestake.io/ps2"; //define Purestake.io server
 const algod_port="";
 const token = {
-  "X-API-Key": "", //Input Purestake.io Api key here
+  "X-API-Key": "3Jxaz1Vqt51y62yGF4Ykpasc2QQZ6FjJ3YgOA93B", //Input Purestake.io Api key here
+};
+const algodClient=new algosdk.Algodv2(token, baseServer, algod_port);
+const indexerServer='https://testnet-algorand.api.purestake.io/idx2';
+const indexerClient=new algosdk.Indexer(token, indexerServer, algod_port);
+const ASSET_ID=21364625;
+
+var voters=[];
+var transactions=[];
+var signed=[];
+var committedAmount=0;
+var rewardAmount;
+
+var rewardMmemonic='horse name glow spider seek float thumb excess express below vanish furnace shallow charge cycle orchard ketchup laugh romance hope cushion this wrong absent scene'
+var secretKey=algosdk.mnemonicToSecretKey(rewardMmemonic); //Put address two Mnemonic Phrase here
+
+console.log(secretKey);
+
+function truncateDecimals(number, digits) {
+    var multiplier = Math.pow(10, digits),
+        adjustedNum = number * multiplier,
+        truncatedNum = Math[adjustedNum < 0 ? 'ceil' : 'floor'](adjustedNum);
+
+    return truncatedNum / multiplier;
 };
 
-io.on('connection', (socket) => { //creates socket connection
-  console.log('a user connected');
-  socket.on('vote',(color)=>{ //gets vote from user and calls the vote function then returns trans id
-   var result= getAddress(color)
-   socket.emit('result',result)
-  }) //run vote
-});
 
-app.use('/', express.static('public'));
-app.use('/algosigner', express.static('public/algosigner/index.html'));
-app.use('/mobilewallet', express.static('public/mobilewallet/index.html'));
-app.use('/walletjs', express.static('public/mobilewallet/dist/my-first-webpack.bundle.js'));
+async function getVoters(){
+    const txnHistory = await indexerClient
+        .searchForTransactions()
+        .address('5CLFBFI33DFGZTCNTIG7FURBRC57E6JA2PI4PZC7PBGPQLXIFV4PCBVYHQ')
+        .assetID(ASSET_ID)
+        .addressRole("receiver")
+        .txType("axfer")
+        .do();
 
-function getAddress(user_input){
-  if(user_input=='red'){
-    return red_address;
-  }
-  else{
-    return blue_address;
-  }
+        await txnHistory.transactions.forEach((txn) => {
+            const transaction = txn["asset-transfer-transaction"];
+            committedAmount += transaction["amount"];
+          });
+
+      const receiverAddress=await txnHistory.transactions.map(receiver=>{
+          if((receiver['asset-transfer-transaction'].amount)/100 >1){
+            voters.push({
+                sender:receiver.sender,
+                amount:(receiver['asset-transfer-transaction'].amount)/100
+            })
+          } 
+        })
 }
 
-async function vote(user_input){
-  
-  var resu;
-  const params = await algodClient.getTransactionParams().do(); //get transaction params
-  
-  if (user_input == "red") {
-    //Draft Asset Transfer Transaction
-    const txn = algosdk.makeAssetTransferTxnWithSuggestedParamsFromObject({
-      from:button_address,
-      to:red_address,
-      amount:amount,
-      assetIndex:asset_id,
-      suggestedParams:{
-        note: "Sent to address zero",
-        type: "axfer", // ASA Transfer (axfer)
-        fee: params.fee,
-        firstRound: params.firstRound,
-        lastRound: params.lastRound,
-        genesisID: params.genesisID,
-        genesisHash: params.genesisHash,
-        flatFee: params.flatFee,
-      }
-  });
+async function draftTransaction(voters, ratio){
+    const params = await algodClient.getTransactionParams().do(); //get transaction params
+    voters.forEach((voter)=>{
+            transactions.push(algosdk.makeAssetTransferTxnWithSuggestedParams(secretKey.addr, voter.sender, undefined, undefined,  (voter.amount*ratio)*100 , undefined, ASSET_ID, params));
+    })
+}
 
-   // Sign transaction with the address two secret key
-    const signedTxn = txn.signTxn(button_address_phrase.sk);
-    //send signed transaction
-     const result = await algodClient.sendRawTransaction(signedTxn).do();
-
-     resu={
-      message:`Sent to Red Address, Your Transaction ID: ${result.txId}`,
-      transaction_id:result.txId
+getVoters().then(()=>{
+    if(committedAmount>=50000000){
+        rewardAmount=3000000;
     }
-  } else if(user_input == "blue"){
-    //Draft Asset Transfer transaction
-    const txn = algosdk.makeAssetTransferTxnWithSuggestedParamsFromObject({
-      from:button_address,
-      to:blue_address,
-      amount:amount,
-      assetIndex:asset_id,
-      suggestedParams:{
-        note: "Sent to Blue address",
-        type: "axfer", // ASA Transfer (axfer)
-        fee: params.fee,
-        firstRound: params.firstRound,
-        lastRound: params.lastRound,
-        genesisID: params.genesisID,
-        genesisHash: params.genesisHash,
-        flatFee: params.flatFee,
-      }
-  });
+    else if(committedAmount>=70000000){
+        rewardAmount=6000000;
+    }
+    else if(committedAmount>=90000000){
+        rewardAmount=9000000
+    }
+    else{
+        reward=10;
+    }
+    var ratio=(rewardAmount*100)/committedAmount
+    ratio=truncateDecimals(ratio, 2);   
 
-   // sign transaction with address two secretkey
-    const signedTxn = txn.signTxn(button_address_phrase.sk);
-    //Send signed Transaction
-     const result = await algodClient.sendRawTransaction(signedTxn).do();
+    draftTransaction(voters, ratio).then(async()=>{
+        let txgroup = algosdk.assignGroupID(transactions);
+        transactions.forEach((transaction)=>{
+            var signedTransaction=transaction.signTxn(secretKey.sk );
+            signed.push(signedTransaction);
+        })
 
-    
-     resu={
-       message:`Sent to Blue Address, Your Transaction ID: ${result.txId}`,
-       transaction_id:result.txId
-     }
-    
-     
-  }
-  console.log(resu)
-  return resu;
-}
-
-const algodClient = new algosdk.Algodv2(token, baseServer, algod_port); //creates new instance of algosdk
-
-const asset_id = 21364625; 
-const button_address = "QKBB7D4EEC36VV4D7EG7ZPDJIRCPQLMVWNVHY6NTDSRLFCN4ITWG7WF45U"; //Put address two private key here
-const blue_address="6572Q2UUMYTVHKIZGZPQIHDQ3RIJ2EUE2IBIEHATZ7GUWSTZKU45PAM74E";  //Put address one private key here
-const red_address="JJPPYSFZOIFVOIO5UCX3BIQL5CQWDTCRUMEU7QWAB3II2XLS7HTE3MJKPI"  //Put address zero private key here
-
-const amount = 100; 
-
-
-const button_address_phrase = algosdk.mnemonicToSecretKey("fiber betray addict wise tornado swing valley tag exile guilt shift speed letter civil valve humor portion book one quality cherry access parrot abstract balcony"); //Put address two Mnemonic Phrase here
-    
-server.listen(PORT, ()=>{
-  console.log("Server running on port "+PORT+"...")
+        let tx = await algodClient.sendRawTransaction(signed).do();
+        console.log("Transaction : " + tx.txId);
+    })  
 });
 
-  
-   
+
 
 
 
